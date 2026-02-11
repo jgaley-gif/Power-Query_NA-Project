@@ -1,0 +1,62 @@
+{
+  "Sheets": {
+    "Testing": "Main_NA West",
+    "Sales": "All NA Product Superclass Sales"
+  },
+  "TestingColumns": {
+    "Company": "Company",
+    "City": "City",
+    "AnalysisType": "Analysis Type",
+    "SuperClass": "Super Class",
+    "FYTD": "# Tests",
+    "PY": "# Tests_1",
+    "Trend": "T12 up or down"
+  },
+  "SalesColumns": {
+    "GrandParent": "GrandParent",
+    "CustomerName": "Customer Name",
+    "ShipCity": "ShipCity",
+    "GeoMap": "GeoMap Ship-to",
+    "SuperClass": "Super Class",
+    "Item": "Item",
+    "FYTD": "FYTD",
+    "PY": "FYTD PY",
+    "Trend": "T12 up or down"
+  },
+  "KeepSuperClasses": [
+    "Indicators",
+    "Allergens",
+    "Pathogen Detection",
+    "General Sanitation",
+    "Sample Collection"
+  ],
+  "Buckets": [
+    "Indicators",
+    "Allergens",
+    "Pathogen Detection",
+    "General Sanitation"
+  ],
+  "ChannelMap": {
+    "IndirectVendors": [
+      "Fisher Scientific",
+      "Thermo Fisher",
+      "VWR",
+      "Avantor",
+      "Ferguson",
+      "Other Indirect Example"
+    ],
+    "MatchOn": "GrandParentOrCustomer" 
+  },
+  "LabMap": {
+    "ThirdPartyLabs": [
+      "Eurofins",
+      "Microbac",
+      "Silliker",
+      "NSF International",
+      "Other Third-Party Example"
+    ]
+  },
+  "Output": {
+    "FinalQueryName": "Site_TestingPurchase_Profile"
+  }
+}
