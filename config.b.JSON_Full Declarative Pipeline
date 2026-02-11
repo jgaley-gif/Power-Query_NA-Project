@@ -1,0 +1,136 @@
+{
+  "Workbook": {
+    "TestingSheet": "Main_NA West",
+    "SalesSheet": "All NA Product Superclass Sales"
+  },
+  "Columns": {
+    "Testing": {
+      "Company": "Company",
+      "City": "City",
+      "AnalysisType": "Analysis Type",
+      "SuperClass": "Super Class",
+      "FYTD": "# Tests",
+      "PY": "# Tests_1",
+      "Trend": "T12 up or down"
+    },
+    "Sales": {
+      "GrandParent": "GrandParent",
+      "CustomerName": "Customer Name",
+      "ShipCity": "ShipCity",
+      "GeoMap": "GeoMap Ship-to",
+      "SuperClass": "Super Class",
+      "Item": "Item",
+      "FYTD": "FYTD",
+      "PY": "FYTD PY",
+      "Trend": "T12 up or down"
+    }
+  },
+  "KeepSuperClasses": [
+    "Indicators",
+    "Allergens",
+    "Pathogen Detection",
+    "General Sanitation",
+    "Sample Collection"
+  ],
+  "Buckets": [
+    "Indicators",
+    "Allergens",
+    "Pathogen Detection",
+    "General Sanitation"
+  ],
+  "Channel": {
+    "MatchOn": "GrandParentOrCustomer",
+    "IndirectVendors": [
+      "Fisher Scientific",
+      "Thermo Fisher",
+      "VWR",
+      "Avantor"
+    ]
+  },
+  "Labs": {
+    "ThirdPartyLabs": [
+      "Eurofins",
+      "Microbac",
+      "Silliker",
+      "NSF International"
+    ]
+  },
+  "Steps": [
+    { "Action": "LoadExcel", "As": "Book" },
+    { "Action": "LoadBlock", "From": "Book", "Item": "@TestingSheet", "As": "TestingRaw" },
+    { "Action": "PromoteHeaders", "From": "TestingRaw", "As": "TestingHdr" },
+    { "Action": "TrimClean", "From": "TestingHdr", "As": "TestingClean" },
+    { "Action": "Rename", "From": "TestingClean", "Map": {
+        "@Testing.Company": "Company",
+        "@Testing.City": "City",
+        "@Testing.AnalysisType": "Analysis Type",
+        "@Testing.SuperClass": "Super Class",
+        "@Testing.FYTD": "Tests_FYTD",
+        "@Testing.PY": "Tests_PY",
+        "@Testing.Trend": "Testing_T12_Trend"
+      }, "As": "TestingRen" },
+    { "Action": "FilterIn", "From": "TestingRen", "Column": "Super Class", "Values": "@KeepSuperClasses", "As": "TestingSC" },
+    { "Action": "AddSiteKey", "From": "TestingSC", "Company": "Company", "City": "City", "As": "TestingKey" },
+    { "Action": "AddTestingSourceFromLabList", "From": "TestingKey", "Company": "Company", "List": "@Labs.ThirdPartyLabs", "As": "TestingSrc" },
+
+    { "Action": "LoadBlock", "From": "Book", "Item": "@SalesSheet", "As": "SalesRaw" },
+    { "Action": "PromoteHeaders", "From": "SalesRaw", "As": "SalesHdr" },
+    { "Action": "TrimClean", "From": "SalesHdr", "As": "SalesClean" },
+    { "Action": "Rename", "From": "SalesClean", "Map": {
+        "@Sales.GrandParent": "GrandParent",
+        "@Sales.CustomerName": "Customer Name",
+        "@Sales.ShipCity": "ShipCity",
+        "@Sales.GeoMap": "GeoMap Ship-to",
+        "@Sales.SuperClass": "Super Class",
+        "@Sales.Item": "Item",
+        "@Sales.FYTD": "Sales_FYTD",
+        "@Sales.PY": "Sales_PY",
+        "@Sales.Trend": "Sales_T12_Trend"
+      }, "As": "SalesRen" },
+    { "Action": "FilterIn", "From": "SalesRen", "Column": "Super Class",
+      "Values": ["Indicators","Allergens","Pathogen Detection","General Sanitation","Sample Collection"], "As": "SalesSC" },
+    { "Action": "AddColumns", "From": "SalesSC",
+      "New": {
+        "Company": "=[Customer Name]",
+        "City": "=[ShipCity]"
+      }, "As": "SalesStd" },
+    { "Action": "AddSiteKey", "From": "SalesStd", "Company": "Company", "City": "City", "As": "SalesKey" },
+    { "Action": "AddChannelFromVendorList", "From": "SalesKey",
+      "GrandParent": "GrandParent", "CustomerName": "Customer Name",
+      "List": "@Channel.IndirectVendors", "MatchOn":"@Channel.MatchOn",
+      "As": "SalesChan" },
+
+    { "Action": "GroupSum", "From": "TestingSrc", "By": ["SiteKey","Company","City","Analysis Type","Super Class","Testing_Source"],
+      "Sums": [{"Name":"Tests_FYTD_Sum","Col":"Tests_FYTD"},{"Name":"Tests_PY_Sum","Col":"Tests_PY"}],
+      "Keep": [{"Name":"Testing_T12_Trend_Any","Col":"Testing_T12_Trend","Agg":"First"}],
+      "As": "TestingAgg" },
+
+    { "Action": "GroupSum", "From": "SalesChan", "By": ["SiteKey","Company","City","Super Class","Channel_Final"],
+      "Sums": [{"Name":"Sales_FYTD_Sum","Col":"Sales_FYTD"},{"Name":"Sales_PY_Sum","Col":"Sales_PY"}],
+      "Keep": [{"Name":"Sales_T12_Trend_Any","Col":"Sales_T12_Trend","Agg":"First"}],
+      "As": "SalesAgg" },
+
+    { "Action": "AddPercent", "From": "TestingAgg", "Numer":"Tests_FYTD_Sum", "Denom":"Tests_PY_Sum", "AsCol":"Tests_%", "As":"TestingPct" },
+    { "Action": "AddPercent", "From": "SalesAgg",   "Numer":"Sales_FYTD_Sum", "Denom":"Sales_PY_Sum", "AsCol":"Sales_%", "As":"SalesPct" },
+
+    { "Action": "Add4Bucket", "From":"TestingPct", "SuperClass":"Super Class", "Buckets":"@Buckets", "As":"TestingB" },
+    { "Action": "Add4Bucket", "From":"SalesPct",   "SuperClass":"Super Class", "Buckets":"@Buckets", "As":"SalesB" },
+
+    { "Action": "Pivot", "From":"TestingB", "Key":"SC4", "Value":"Tests_FYTD_Sum", "Prefix":"TestsFYTD_", "As":"TestFYTD" },
+    { "Action": "Pivot", "From":"TestingB", "Key":"SC4", "Value":"Tests_PY_Sum",   "Prefix":"TestsPY_",  "As":"TestPY" },
+    { "Action": "Pivot", "From":"TestingB", "Key":"SC4", "Value":"Tests_%",        "Prefix":"Tests%_",   "As":"TestPct" },
+
+    { "Action": "Pivot", "From":"SalesB", "Key":"SC4", "Value":"Sales_FYTD_Sum", "Prefix":"SalesFYTD_", "As":"SalesFYTD" },
+    { "Action": "Pivot", "From":"SalesB", "Key":"SC4", "Value":"Sales_PY_Sum",   "Prefix":"SalesPY_",  "As":"SalesPY" },
+    { "Action": "Pivot", "From":"SalesB", "Key":"SC4", "Value":"Sales_%",        "Prefix":"Sales%_",   "As":"SalesPct" },
+
+    { "Action": "SampleCollectionFlag", "From":"SalesB", "As":"SampleFlag" },
+
+    { "Action": "ComposeProfile",
+      "TestingDim":"TestingB", "SalesDim":"SalesB",
+      "Pieces":["TestFYTD","TestPY","TestPct","SalesFYTD","SalesPY","SalesPct","SampleFlag"],
+      "As":"Final" },
+
+    { "Action": "Output", "From": "Final", "As": "Site_TestingPurchase_Profile" }
+  ]
+}
