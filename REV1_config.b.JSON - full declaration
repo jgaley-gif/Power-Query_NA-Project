@@ -1,0 +1,68 @@
+{
+  "Excel": {
+    "TestingSheet": "Testing",
+    "SalesSheet": "Sales"
+  },
+
+  "Columns": {
+    "Testing": {
+      "Company": "Company",
+      "City": "City",
+      "AnalysisType": "Analysis Type",
+      "Superclass": "Super Class",
+      "VolumeTrend": "Testing_T12_Trend",
+      "FYTD": "Tests_FYTD",
+      "PY": "Tests_PY"
+    },
+    "Sales": {
+      "GrandParent": "GrandParent",
+      "CustomerName": "Customer Name",
+      "ShipCity": "ShipCity",
+      "GeoMapShipTo": "GeoMap Ship-to",
+      "Superclass": "Super Class",
+      "Item": "Item",
+      "Trend": "Sales_T12_Trend"
+    }
+  },
+
+  "KeepSuperClasses": [
+    "ATP",
+    "Listeria",
+    "Allergen",
+    "Sample Collection",
+    "Salmonella"
+  ],
+
+  "ChannelMap": {
+    "MatchOn": "GrandParentOrCustomer",
+    "IndirectVendors": [
+      "Fisher Scientific",
+      "VWR/Avantor",
+      "Thomas Scientific",
+      "MPO/Other Distributor"
+    ]
+  },
+
+  "LabMap": {
+    "ThirdPartyLabs": [
+      "Eurofins",
+      "ALS",
+      "Microbac"
+    ]
+  },
+
+  "Fuzzy": {
+    "Enabled": true,
+    "Threshold": 0.75,
+    "IgnoreCase": true,
+    "Culture": "en-US",
+    "MaxMatches": 1,
+    "UnknownSiteLabel": "(Indirect – site unknown)"
+  },
+
+  "Output": {
+    "FinalQueryName": "Site_TestingPurchase_Profile",
+    "IncludeTestingNumerics": true,
+    "IncludeSalesNumerics": false
+  }
+}
