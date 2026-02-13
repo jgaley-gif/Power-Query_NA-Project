@@ -1,0 +1,264 @@
+// ======================================
+// Option B: Full Declarative Pipeline (Clean)
+// ======================================
+// Requirements:
+// - Parameter pWorkbookPath : Text (local path to Excel workbook)
+// - Parameter pSpecUrl      : Text (RAW URL to pipeline_b.json)
+
+let
+  // ---- Load Spec (JSON) ----
+  Spec = Json.Document(Web.Contents(pSpecUrl)),
+
+  // ---- Open Excel ----
+  BookAll = Excel.Workbook(File.Contents(pWorkbookPath), null, true),
+
+  // ---- Resolve @tokens (e.g., "@Excel.TestingSheet") ----
+  ResolveToken = (t as any) as any =>
+    if (t is text) and Text.StartsWith(t, "@") then
+      let
+        path  = Text.AfterDelimiter(t, "@", 0),
+        parts = Text.Split(path, "."),
+        val   = List.Accumulate(parts, Spec,
+                 (s, p) => if (s is record and Record.HasFields(s, p)) then Record.Field(s, p)
+                           else error "Config path not found: @" & path)
+      in val
+    else t,
+
+  // ---- Helpers ----
+  GetBlock = (itemName as text) as table =>
+    let
+      t        = ResolveToken(itemName),
+      trySheet = try BookAll{[Item=t, Kind="Sheet"]}[Data] otherwise null,
+      out      = if trySheet <> null then trySheet else BookAll{[Item=t, Kind="Table"]}[Data]
+    in out,
+
+  TrimClean = (tbl as table) as table =>
+    Table.TransformColumns(
+      tbl,
+      List.Transform(Table.ColumnNames(tbl), each { _, (x) => if x is text then Text.Trim(Text.Clean(x)) else x })
+    ),
+
+  RenameWithMap = (tbl as table, mp as record) as table =>
+    let
+      // New column names are the keys of mp; values are the original names
+      pairs =
+        List.Transform(
+          Record.FieldNames(mp),
+          (k) => { ResolveToken(Record.Field(mp, k)), k }
+        ),
+      applied =
+        List.Accumulate(
+          pairs, tbl,
+          (state, pair) =>
+            let old = pair{0}, new = pair{1}
+            in if List.Contains(Table.ColumnNames(state), old) then Table.RenameColumns(state, {{old,new}}) else state
+        )
+    in applied,
+
+  FilterIn = (tbl as table, col as text, values as any) as table =>
+    let vals = if values is list then values else ResolveToken(values)
+    in Table.SelectRows(tbl, each List.Contains(vals, Record.Field(_, col))),
+
+  fxCleanText = (t as nullable text) as nullable text =>
+    if t = null then null else
+      let
+        t1 = Text.Upper(Text.Trim(t)),
+        t2 = Text.Replace(t1, "  ", " "),
+        t3 = Text.RemoveAny(t2, {"'", ".", ",", ";", ":", "-", "_", "/", "\", "(", ")", "[", "]"})
+      in t3,
+
+  fxSiteKey = (company as nullable text, city as nullable text) as nullable text =>
+    if company = null then null
+    else if city = null or Text.Trim(city) = "" then fxCleanText(company)
+    else fxCleanText(company) & "|" & fxCleanText(city),
+
+  // ---- Config shortcuts ----
+  TestingSheet     = Spec[Excel][TestingSheet],
+  SalesSheet       = Spec[Excel][SalesSheet],
+  TCols            = Spec[Columns][Testing],
+  SCols            = Spec[Columns][Sales],
+  KeepSC           = Spec[KeepSuperClasses],
+  ChannelMap       = Spec[ChannelMap],
+  LabMap           = Spec[LabMap],
+  FuzzyCfg         = Spec[Fuzzy],
+  OutCfg           = Spec[Output],
+  UnknownSiteLabel = FuzzyCfg[UnknownSiteLabel],
+
+  // ---- Load + prep Testing ----
+  RawTesting       = GetBlock(TestingSheet),
+  TestingHeaders   = Table.PromoteHeaders(RawTesting, [PromoteAllScalars=true]),
+  TestingTrim      = TrimClean(TestingHeaders),
+  TestingRenamed   = RenameWithMap(TestingTrim, TCols),
+  TestingFiltered  = FilterIn(TestingRenamed, "Super Class", KeepSC),
+  TestingTyped     = Table.TransformColumnTypes(
+                        TestingFiltered,
+                        {
+                          {"Company", type text}, {"City", type text},
+                          {"Analysis Type", type text}, {"Super Class", type text},
+                          {TCols[FYTD]?, Int64.Type}, {TCols[PY]?, Int64.Type},
+                          {"Testing_T12_Trend", type text}
+                        }
+                      ),
+  TestingKeyed     =
+    let
+      addC  = Table.AddColumn(TestingTyped, "Company_Clean", each fxCleanText([Company]), type text),
+      addCi = Table.AddColumn(addC, "City_Clean", each fxCleanText([City]), type text),
+      addK  = Table.AddColumn(addCi, "SiteKey", each fxSiteKey([Company], [City]), type text)
+    in addK,
+
+  // Testing source from Third‑Party lab list (categorical)
+  AddTestingSourceFromLabList = (tbl as table, companyCol as text, labs as any) as table =>
+    let labList = if labs is list then labs else ResolveToken(labs)
+    in Table.AddColumn(
+         tbl, "Testing_Source",
+         each if List.Contains(labList, Record.Field(_, companyCol)) then "Third-Party Lab" else "In-House",
+         type text
+       ),
+
+  TestingFinal = AddTestingSourceFromLabList(TestingKeyed, "Company", LabMap[ThirdPartyLabs]),
+
+  // ---- Load + prep Sales (categorical only) ----
+  RawSales       = GetBlock(SalesSheet),
+  SalesHeaders   = Table.PromoteHeaders(RawSales, [PromoteAllScalars=true]),
+  SalesTrim      = TrimClean(SalesHeaders),
+  SalesRenamed   = RenameWithMap(SalesTrim, SCols),
+  SalesFiltered  = FilterIn(SalesRenamed, "Super Class", KeepSC),
+
+  // Standardize company/city for sitekey on Sales side
+  SalesCompany   = Table.AddColumn(SalesFiltered, "Company", each [Customer Name], type text),
+
+  // Channel mapping: Direct vs Indirect (categorical)
+  SalesChannel =
+    Table.AddColumn(
+      SalesCompany, "Channel_Final",
+      each
+        let gp = try [GrandParent] otherwise null,
+            cn = try [Customer Name] otherwise null,
+            isIndirect =
+              if ChannelMap[MatchOn] = "GrandParent"
+              then List.Contains(ChannelMap[IndirectVendors], gp)
+              else if ChannelMap[MatchOn] = "CustomerName"
+              then List.Contains(ChannelMap[IndirectVendors], cn)
+              else List.Contains(ChannelMap[IndirectVendors], gp) or List.Contains(ChannelMap[IndirectVendors], cn)
+        in if isIndirect then "Indirect" else "Direct",
+      type text
+    ),
+
+  // Clean keys; if Indirect has no city, inject UnknownSite label so SiteKey is deterministic
+  SalesKeyed_Pre =
+    let
+      addC  = Table.AddColumn(SalesChannel, "Company_Clean", each fxCleanText([Company]), type text),
+      addCi = Table.AddColumn(
+                addC, "City_Clean",
+                each
+                  let cityRaw = [ShipCity]
+                  in if [Channel_Final] = "Indirect" and (cityRaw = null or Text.Trim(Text.From(cityRaw)) = "")
+                     then fxCleanText(UnknownSiteLabel)
+                     else fxCleanText(Text.From(cityRaw)),
+                type text
+              )
+    in addCi,
+
+  SalesKeyed = Table.AddColumn(
+                 SalesKeyed_Pre, "SiteKey",
+                 each if [City_Clean] = null or Text.Trim([City_Clean]) = ""
+                      then fxCleanText([Company])
+                      else [Company_Clean] & "|" & [City_Clean],
+                 type text
+               ),
+
+  // ---- Dimension tables for fuzzy merge ----
+  DimTesting = Table.Distinct(Table.SelectColumns(TestingFinal, {"SiteKey","Company","City","Analysis Type","Testing_Source","Company_Clean","City_Clean"})),
+  DimSales   = Table.Distinct(Table.SelectColumns(SalesKeyed,   {"SiteKey","Company","City","Channel_Final","Company_Clean","City_Clean"})),
+
+  // ---- Fuzzy options ----
+  FZ = [
+    IgnoreCase = FuzzyCfg[IgnoreCase],
+    Culture    = FuzzyCfg[Culture],
+    Threshold  = FuzzyCfg[Threshold],   // 0.75
+    MaxMatches = FuzzyCfg[MaxMatches]   // 1
+  ],
+
+  // Left fuzzy: Testing → Sales
+  LeftFuzzy = Table.FuzzyNestedJoin(
+                DimTesting, {"Company_Clean","City_Clean"},
+                DimSales,   {"Company_Clean","City_Clean"},
+                "SalesDim", JoinKind.LeftOuter, FZ
+              ),
+
+  // Right fuzzy: bring Sales rows that had no Testing match
+  RightFuzzyOnly =
+    Table.SelectRows(
+      Table.FuzzyNestedJoin(
+        DimSales, {"Company_Clean","City_Clean"},
+        DimTesting, {"Company_Clean","City_Clean"},
+        "TestDim", JoinKind.LeftOuter, FZ
+      ),
+      each Table.RowCount([TestDim]) = 0
+    ),
+
+  Combined   = Table.Combine({LeftFuzzy, Table.RenameColumns(RightFuzzyOnly, {{"TestDim","SalesDim"}})}),
+  CombinedExp= Table.ExpandTableColumn(Combined, "SalesDim", {"SiteKey","Company","City","Channel_Final"}, {"Sales.SiteKey","Sales.Company","Sales.City","Channel_Final"}),
+
+  // ---- Optional testing numerics (controlled by config) ----
+  THasNum = try OutCfg[IncludeTestingNumerics] otherwise true,
+
+  TestingGrouped = Table.Group(
+                     TestingFinal,
+                     {"SiteKey","Company","City","Analysis Type","Super Class","Testing_Source"},
+                     {
+                       {"Tests_FYTD_Sum", each List.Sum(List.RemoveNulls(Table.Column(_, TCols[FYTD]?))), type nullable number},
+                       {"Tests_PY_Sum",   each List.Sum(List.RemoveNulls(Table.Column(_, TCols[PY]?))),   type nullable number},
+                       {"Testing_T12_Trend_Any", each List.First(List.RemoveNulls([Testing_T12_Trend])), type nullable text}
+                     }
+                   ),
+
+  Pivot4 = (tbl as table, valCol as text, prefix as text) as table =>
+    let
+      sc4     = Table.AddColumn(tbl, "SC4", each [Super Class], type text),
+      pivot   = Table.Pivot(
+                  Table.TransformColumnTypes(Table.SelectColumns(sc4, {"SiteKey","SC4", valCol}), {{"SC4", type text}}),
+                  List.Distinct(sc4[SC4]), "SC4", valCol, List.Sum
+                ),
+      renamed = Table.TransformColumnNames(pivot, each if _ <> "SiteKey" then prefix & _ else _)
+    in renamed,
+
+  TestFYTD_Piv = Pivot4(TestingGrouped, "Tests_FYTD_Sum", "TestsFYTD_"),
+  TestPY_Piv   = Pivot4(TestingGrouped, "Tests_PY_Sum",   "TestsPY_"),
+
+  // ---- Base output
+  BaseOut =
+    let
+      addComp = Table.AddColumn(CombinedExp, "Company_Final",
+                  each if [Company] <> null and Text.Trim([Company]) <> "" then [Company] else [Sales.Company], type text),
+      addCity = Table.AddColumn(addComp, "City_Final",
+                  each if [City] <> null and Text.Trim([City]) <> "" then [City] else [Sales.City], type text)
+    in addCity,
+
+  WithTestingNumerics =
+    if THasNum
+    then
+      let
+        j1 = Table.NestedJoin(BaseOut, {"SiteKey"}, TestFYTD_Piv, {"SiteKey"}, "TestFYTD", JoinKind.LeftOuter),
+        e1 = Table.ExpandTableColumn(j1, "TestFYTD", Table.ColumnNames(TestFYTD_Piv), Table.ColumnNames(TestFYTD_Piv)),
+        j2 = Table.NestedJoin(e1, {"SiteKey"}, TestPY_Piv, {"SiteKey"}, "TestPY", JoinKind.LeftOuter),
+        e2 = Table.ExpandTableColumn(j2, "TestPY", Table.ColumnNames(TestPY_Piv), Table.ColumnNames(TestPY_Piv))
+      in e2
+    else BaseOut,
+
+  // ---- Final select (sales: categorical only)
+  Result =
+    let
+      colsWanted =
+        List.Distinct(
+          {
+            "SiteKey", "Company_Final", "City_Final",
+            "Analysis Type", "Testing_Source",
+            "Channel_Final" // categorical sales only
+          } &
+          ( if THasNum then List.RemoveItems(Table.ColumnNames(WithTestingNumerics), Table.ColumnNames(BaseOut)) else {} )
+        )
+    in Table.SelectColumns(WithTestingNumerics, colsWanted, MissingField.UseNull)
+
+in
+  Result

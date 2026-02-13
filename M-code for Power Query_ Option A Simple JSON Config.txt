@@ -1,0 +1,237 @@
+// ============================
+// Option A: Simple JSON Config
+// ============================
+//
+// How to use:
+// 1) Create a parameter pWorkbookPath (Text) pointing to your local "NA_TriTable Ref.xlsx"
+// 2) Set pConfigUrl to the RAW GitHub URL of config_a.json
+// 3) This query returns the final table: Site_TestingPurchase_Profile
+
+let
+  // ---- CONFIG SOURCE (GitHub JSON) ----
+  pConfigUrl = "https://raw.githubusercontent.com/<org-or-user>/<repo>/<branch>/config/config_a.json",
+  ConfigResponse = Web.Contents(pConfigUrl),
+  Config = Json.Document(ConfigResponse),
+
+  // ---- LOCAL EXCEL SOURCE ----
+  // Create a parameter pWorkbookPath in Excel: e.g. C:\Data\NA_TriTable Ref.xlsx
+  Source = Excel.Workbook(File.Contents(pWorkbookPath), null, true),
+
+  // ---- Helpers from Config ----
+  TestingSheetName = Config[Sheets][Testing],
+  SalesSheetName   = Config[Sheets][Sales],
+
+  // Column maps
+  TCols = Config[TestingColumns],
+  SCols = Config[SalesColumns],
+
+  KeepSC = Config[KeepSuperClasses],
+  Buckets = Config[Buckets],
+
+  IndirectVendors = Config[ChannelMap][IndirectVendors],
+  ChannelMatchMode = Config[ChannelMap][MatchOn],  // "GrandParentOrCustomer" or "GrandParent" or "CustomerName"
+
+  ThirdPartyLabs = Config[LabMap][ThirdPartyLabs],
+
+  // ---- Utility: Try get a sheet or table by name ----
+  GetBlock = (tbl as table, itemName as text) as table =>
+    let
+      // Try a sheet first
+      trySheet = try tbl{[Item=itemName, Kind="Sheet"]}[Data] otherwise null,
+      // Fall back to a named table if sheet was not found
+      out = if trySheet <> null then trySheet else tbl{[Item=itemName, Kind="Table"]}[Data]
+    in
+      out,
+
+  // ---- Load Testing block ----
+  RawTesting = GetBlock(Source, TestingSheetName),
+  TestingHeaders = Table.PromoteHeaders(RawTesting, [PromoteAllScalars=true]),
+  TestingTrim = Table.TransformColumns(TestingHeaders,
+                  List.Transform(Table.ColumnNames(TestingHeaders),
+                    each {_, (x)=> if x is text then Text.Trim(Text.Clean(x)) else x})),
+  // Rename columns dynamically from JSON (only those that exist)
+  TestingRenamePairs = {
+    { Record.Field(TCols,"Company"),      "Company" },
+    { Record.Field(TCols,"City"),         "City" },
+    { Record.Field(TCols,"AnalysisType"), "Analysis Type" },
+    { Record.Field(TCols,"SuperClass"),   "Super Class" },
+    { Record.Field(TCols,"FYTD"),         "Tests_FYTD" },
+    { Record.Field(TCols,"PY"),           "Tests_PY" },
+    { Record.Field(TCols,"Trend"),        "Testing_T12_Trend" }
+  },
+  TestingRenamed =
+    List.Accumulate(TestingRenamePairs, TestingTrim,
+      (state, pair) =>
+        let src = pair{0}, dst = pair{1} in
+        if List.Contains(Table.ColumnNames(state), src) then Table.RenameColumns(state, {{src,dst}}) else state),
+
+  // Keep only super classes of interest
+  TestingFiltered = Table.SelectRows(TestingRenamed, each List.Contains(KeepSC, [#"Super Class"])),
+
+  // Ensure types
+  TestingTyped = Table.TransformColumnTypes(TestingFiltered, {
+      {"Company", type text}, {"City", type text}, {"Analysis Type", type text},
+      {"Super Class", type text}, {"Tests_FYTD", Int64.Type}, {"Tests_PY", Int64.Type},
+      {"Testing_T12_Trend", type text}
+    }),
+
+  // SiteKey with city fallback
+  TestingSiteKey = Table.AddColumn(TestingTyped, "SiteKey",
+    each if [City] <> null and Text.Trim([City]) <> "" then [Company] & " | " & [City] else [Company], type text),
+
+  // Testing Source (In-House vs Third-Party) using LabMap list
+  TestingWithSource = Table.AddColumn(TestingSiteKey, "Testing_Source",
+    each if List.Contains(ThirdPartyLabs, [Company]) then "Third-Party Lab" else "In-House", type text),
+
+  // ---- Load Sales/POS block ----
+  RawSales = GetBlock(Source, SalesSheetName),
+  SalesHeaders = Table.PromoteHeaders(RawSales, [PromoteAllScalars=true]),
+  SalesTrim = Table.TransformColumns(SalesHeaders,
+                List.Transform(Table.ColumnNames(SalesHeaders),
+                  each {_, (x)=> if x is text then Text.Trim(Text.Clean(x)) else x})),
+
+  SalesRenamePairs = {
+    { Record.Field(SCols,"GrandParent"),  "GrandParent" },
+    { Record.Field(SCols,"CustomerName"), "Customer Name" },
+    { Record.Field(SCols,"ShipCity"),     "ShipCity" },
+    { Record.Field(SCols,"GeoMap"),       "GeoMap Ship-to" },
+    { Record.Field(SCols,"SuperClass"),   "Super Class" },
+    { Record.Field(SCols,"Item"),         "Item" },
+    { Record.Field(SCols,"FYTD"),         "Sales_FYTD" },
+    { Record.Field(SCols,"PY"),           "Sales_PY" },
+    { Record.Field(SCols,"Trend"),        "Sales_T12_Trend" }
+  },
+  SalesRenamed =
+    List.Accumulate(SalesRenamePairs, SalesTrim,
+      (state, pair) =>
+        let src = pair{0}, dst = pair{1} in
+        if List.Contains(Table.ColumnNames(state), src) then Table.RenameColumns(state, {{src,dst}}) else state),
+
+  SalesFiltered = Table.SelectRows(SalesRenamed, each List.Contains(KeepSC, [#"Super Class"]) or [#"Super Class"] = "Sample Collection"),
+
+  // Standardize Company/City for SiteKey on Sales side
+  SalesCompany = Table.AddColumn(SalesFiltered, "Company", each [#"Customer Name"], type text),
+  SalesCity    = Table.AddColumn(SalesCompany, "City", each [ShipCity], type text),
+
+  SalesTyped = Table.TransformColumnTypes(SalesCity, {
+    {"GrandParent", type text}, {"Customer Name", type text}, {"ShipCity", type text},
+    {"Super Class", type text}, {"Item", type text},
+    {"Sales_FYTD", type number}, {"Sales_PY", type number}, {"Sales_T12_Trend", type text},
+    {"Company", type text}, {"City", type text}
+  }),
+
+  SalesSiteKey = Table.AddColumn(SalesTyped, "SiteKey",
+    each if [City] <> null and Text.Trim([City]) <> "" then [Company] & " | " & [City] else [Company], type text),
+
+  // Channel mapping: mark "Indirect" if GrandParent OR Customer is in list (per MatchOn)
+  SalesChannel =
+    Table.AddColumn(SalesSiteKey, "Channel_Final", each
+      let
+        gp = try [GrandParent] otherwise null,
+        cn = try [#"Customer Name"] otherwise null,
+        isIndirect =
+          if ChannelMatchMode = "GrandParent" then List.Contains(IndirectVendors, gp)
+          else if ChannelMatchMode = "CustomerName" then List.Contains(IndirectVendors, cn)
+          else List.Contains(IndirectVendors, gp) or List.Contains(IndirectVendors, cn)
+      in if isIndirect then "Indirect" else "Direct", type text),
+
+  // ---- Sample Collection purchase flag (by SiteKey) ----
+  Sales_SC_Only = Table.SelectRows(SalesChannel, each [#"Super Class"] = "Sample Collection"),
+  Sales_SC_Flag = Table.Group(Sales_SC_Only, {"SiteKey"}, {{"Has_SampleCollection_Purchase", each true, type logical}}),
+
+  // ---- Summaries ----
+  // Testing summary by SiteKey × Analysis × SuperClass × Source
+  TestingGrouped = Table.Group(TestingWithSource,
+    {"SiteKey","Company","City","Analysis Type","Super Class","Testing_Source"},
+    {
+      {"Tests_FYTD_Sum", each List.Sum(List.RemoveNulls([Tests_FYTD])), type number},
+      {"Tests_PY_Sum",   each List.Sum(List.RemoveNulls([Tests_PY])),   type number},
+      {"Testing_T12_Trend_Any", each List.First(List.RemoveNulls([Testing_T12_Trend])), type text}
+    }),
+  TestingWithPct =
+    Table.AddColumn(TestingGrouped, "Tests_%", each
+      let py = [Tests_PY_Sum] in if py = null or py = 0 then null else Number.Round(([Tests_FYTD_Sum]-py)/py,4), type number),
+
+  // Sales summary by SiteKey × SuperClass × Channel
+  SalesGrouped = Table.Group(SalesChannel,
+    {"SiteKey","Company","City","Super Class","Channel_Final"},
+    {
+      {"Sales_FYTD_Sum", each List.Sum(List.RemoveNulls([Sales_FYTD])), type number},
+      {"Sales_PY_Sum",   each List.Sum(List.RemoveNulls([Sales_PY])),   type number},
+      {"Sales_T12_Trend_Any", each List.First(List.RemoveNulls([Sales_T12_Trend])), type text}
+    }),
+  SalesWithPct =
+    Table.AddColumn(SalesGrouped, "Sales_%", each
+      let py = [Sales_PY_Sum] in if py = null or py = 0 then null else Number.Round(([Sales_FYTD_Sum]-py)/py,4), type number),
+
+  // ---- Pivot to wide 4-bucket (plus Sample Collection flag) ----
+  To4Bucket = (sc as text) as text =>
+    if List.Contains(Buckets, sc) then sc else if sc = "Sample Collection" then "Sample Collection" else "Other",
+
+  TestingBucketed = Table.AddColumn(TestingWithPct, "SC4", each To4Bucket([#"Super Class"]), type text),
+  SalesBucketed   = Table.AddColumn(SalesWithPct,   "SC4", each To4Bucket([#"Super Class"]), type text),
+
+  Pivot4 = (tbl as table, valCol as text, prefix as text) as table =>
+    let
+      pivot = Table.Pivot(Table.TransformColumnTypes(Table.SelectColumns(tbl, {"SiteKey","SC4", valCol}), {{"SC4", type text}}),
+                          List.Distinct(tbl[SC4]), "SC4", valCol, List.Sum),
+      renamed = Table.TransformColumnNames(pivot, each if _ <> "SiteKey" then prefix & _ else _)
+    in renamed,
+
+  // Testing pivots: FYTD, PY, %, Trend
+  TestFYTD_Piv = Pivot4(TestingBucketed, "Tests_FYTD_Sum", "TestsFYTD_"),
+  TestPY_Piv   = Pivot4(TestingBucketed, "Tests_PY_Sum",   "TestsPY_"),
+  TestPct_Piv  = Pivot4(TestingBucketed, "Tests_%",        "Tests%_"),
+
+  // Sales pivots: FYTD, PY, %, Trend
+  SalesFYTD_Piv = Pivot4(SalesBucketed, "Sales_FYTD_Sum", "SalesFYTD_"),
+  SalesPY_Piv   = Pivot4(SalesBucketed, "Sales_PY_Sum",   "SalesPY_"),
+  SalesPct_Piv  = Pivot4(SalesBucketed, "Sales_%",        "Sales%_"),
+
+  // Base dimension tables (distinct per Site)
+  DimTesting = Table.Distinct(Table.SelectColumns(TestingBucketed, {"SiteKey","Company","City","Analysis Type","Testing_Source"})),
+  DimSales   = Table.Distinct(Table.SelectColumns(SalesBucketed, {"SiteKey","Company","City","Channel_Final"})),
+
+  // Merge the pieces into a single profile
+  S0 = Table.NestedJoin(DimTesting, {"SiteKey"}, DimSales, {"SiteKey"}, "SalesDim", JoinKind.FullOuter),
+  S0Exp = Table.ExpandTableColumn(S0, "SalesDim", {"Company","City","Channel_Final"}, {"Sales.Company","Sales.City","Channel_Final"}),
+
+  S1 = Table.NestedJoin(S0Exp, {"SiteKey"}, TestFYTD_Piv, {"SiteKey"}, "TestFYTD", JoinKind.LeftOuter),
+  S1e = Table.ExpandTableColumn(S1, "TestFYTD", Table.ColumnNames(TestFYTD_Piv), Table.ColumnNames(TestFYTD_Piv)),
+
+  S2 = Table.NestedJoin(S1e, {"SiteKey"}, TestPY_Piv, {"SiteKey"}, "TestPY", JoinKind.LeftOuter),
+  S2e = Table.ExpandTableColumn(S2, "TestPY", Table.ColumnNames(TestPY_Piv), Table.ColumnNames(TestPY_Piv)),
+
+  S3 = Table.NestedJoin(S2e, {"SiteKey"}, TestPct_Piv, {"SiteKey"}, "TestPct", JoinKind.LeftOuter),
+  S3e = Table.ExpandTableColumn(S3, "TestPct", Table.ColumnNames(TestPct_Piv), Table.ColumnNames(TestPct_Piv)),
+
+  S4 = Table.NestedJoin(S3e, {"SiteKey"}, SalesFYTD_Piv, {"SiteKey"}, "SalesFYTD", JoinKind.LeftOuter),
+  S4e = Table.ExpandTableColumn(S4, "SalesFYTD", Table.ColumnNames(SalesFYTD_Piv), Table.ColumnNames(SalesFYTD_Piv)),
+
+  S5 = Table.NestedJoin(S4e, {"SiteKey"}, SalesPY_Piv, {"SiteKey"}, "SalesPY", JoinKind.LeftOuter),
+  S5e = Table.ExpandTableColumn(S5, "SalesPY", Table.ColumnNames(SalesPY_Piv), Table.ColumnNames(SalesPY_Piv)),
+
+  S6 = Table.NestedJoin(S5e, {"SiteKey"}, SalesPct_Piv, {"SiteKey"}, "SalesPct", JoinKind.LeftOuter),
+  S6e = Table.ExpandTableColumn(S6, "SalesPct", Table.ColumnNames(SalesPct_Piv), Table.ColumnNames(SalesPct_Piv)),
+
+  // Bring Sample Collection history flag
+  S7 = Table.NestedJoin(S6e, {"SiteKey"}, Sales_SC_Flag, {"SiteKey"}, "SampleFlag", JoinKind.LeftOuter),
+  S7e = Table.ExpandTableColumn(S7, "SampleFlag", {"Has_SampleCollection_Purchase"}, {"Has_SampleCollection_Purchase"}),
+
+  // Final tidy: prefer Company/City from Testing when available; else Sales
+  FinalCompany = Table.AddColumn(S7e, "Company_Final",
+      each if [Company] <> null and Text.Trim([Company]) <> "" then [Company] else [Sales.Company], type text),
+  FinalCity = Table.AddColumn(FinalCompany, "City_Final",
+      each if [City] <> null and Text.Trim([City]) <> "" then [City] else [Sales.City], type text),
+
+  // Select and order columns
+  Result =
+    Table.SelectColumns(FinalCity,
+      List.Distinct(
+        {"SiteKey","Company_Final","City_Final","Analysis Type","Testing_Source","Channel_Final",
+         "Has_SampleCollection_Purchase"} &
+        List.RemoveMatchingItems(Table.ColumnNames(FinalCity), {"Company","Sales.Company","City","Sales.City"})
+      )
+    )
+in
+  Result

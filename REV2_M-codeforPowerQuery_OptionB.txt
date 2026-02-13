@@ -1,0 +1,27 @@
+let
+    // -----------------------------
+    // Parameters (create in Manage Parameters as Text)
+    // -----------------------------
+    // pSpecUrl: Raw GitHub URL to your JSON config
+    // pSharePointSiteRoot: e.g., "https://<tenant>.sharepoint.com"
+    // pSharePointFolderPath: e.g., "https://<tenant>.sharepoint.com/sites/<Site>/Shared Documents/<Folder>/"
+    // pWorkbookName: e.g., "NA_TriTable Ref.xlsx"
+
+    // ---- Config source ----
+    Spec = Json.Document(Web.Contents(pSpecUrl)),
+
+    // ---- Excel source (SharePoint/OneDrive) ----
+    Files      = SharePoint.Files(pSharePointSiteRoot, [ApiVersion = 15]),
+    Filtered   = Table.SelectRows(
+                    Files,
+                    each [Folder Path] = pSharePointFolderPath and [Name] = pWorkbookName
+                 ),
+    BookBinary = if Table.RowCount(Filtered) = 0
+                 then error "Workbook not found at: " & pSharePointFolderPath & pWorkbookName
+                 else Filtered{0}[Content],
+    BookAll    = Excel.Workbook(BookBinary, null, true)
+
+    // ---- (keep the rest of your script unchanged: ResolveToken, GetBlock, TrimClean, etc.) ----
+
+in
+    BookAll
