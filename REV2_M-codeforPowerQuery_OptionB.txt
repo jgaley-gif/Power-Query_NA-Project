@@ -4,8 +4,8 @@ let
     // -----------------------------
     // pSpecUrl: Raw GitHub URL to your JSON config
     // pSharePointSiteRoot: e.g., "https://<tenant>.sharepoint.com"
-    // pSharePointFolderPath: e.g., "https://<tenant>.sharepoint.com/sites/<Site>/Shared Documents/<Folder>/"
-    // pWorkbookName: e.g., "NA_TriTable Ref.xlsx"
+    // pSharePointFolderPath: e.g., "https://neogencorp-my.sharepoint.com/:x:/r/personal/jgaley_neogen_com/Documents/Documents/NA_TriTable_Ref.xlsx?d=w028ff9f42461401397f03ec04a0c8522&csf=1&web=1&e=d6Z3Jo"
+    // pWorkbookName: e.g., "NA_TriTable_Ref.xlsx"
 
     // ---- Config source ----
     Spec = Json.Document(Web.Contents(pSpecUrl)),
@@ -24,4 +24,5 @@ let
     // ---- (keep the rest of your script unchanged: ResolveToken, GetBlock, TrimClean, etc.) ----
 
 in
+
     BookAll
