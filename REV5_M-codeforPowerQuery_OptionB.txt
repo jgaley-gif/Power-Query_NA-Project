@@ -3,9 +3,9 @@ let
     // Parameters (create in Manage Parameters as Text)
     // -----------------------------
     // pSpecUrl: Raw GitHub URL to your JSON config
-    // pSharePointSiteRoot: e.g., "https://<tenant>.sharepoint.com"
-    // pSharePointFolderPath: e.g., "https://neogencorp-my.sharepoint.com/personal/jgaley_neogen_com/Documents/Documents/NA_TriTable_Ref.xlsx"
-    // pWorkbookName: e.g., "NA_TriTable_Ref.xlsx"
+    // pSharePointSiteRoot:https://neogencorp-my.sharepoint.com
+    // pSharePointFolderPath:/personal/jgaley_neogen_com/Documents/Documents/
+    // pWorkbookName:NA_TriTable_Ref.xlsx
 
     // ---- Config source ----
     Spec = Json.Document(Web.Contents(pSpecUrl)),
@@ -26,4 +26,5 @@ let
 in
 
     BookAll
+
 
